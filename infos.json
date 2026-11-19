@@ -1,0 +1,17 @@
+{
+  "name": "melodi_mailbox",
+  "title": "MELODI Mailbox",
+  "version": "1.0.0",
+  "description": "Client de messagerie professionnel multi-comptes (IMAP/SMTP, OAuth2, synchronisation, pièces jointes média et intégrations ERP).",
+  "author": "BYT3LAB",
+  "category": "communication",
+  "icon": "mail",
+  "depends": [
+    "base",
+    "melodi_media"
+  ],
+  "depends_python": [
+    "aioimaplib>=1.1.0",
+    "nh3>=0.2.18"
+  ]
+}

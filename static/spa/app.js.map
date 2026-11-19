@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["app.ts"],
+  "sourcesContent": ["import { createApp } from '/static/base/melodiJS/index.js';\nimport { router } from './router.js';\nimport { store } from './store.js';\n\nfunction startMailApp(): void {\n  const mountEl = document.getElementById('mail-app');\n  if (!mountEl) return;\n\n  const app = createApp({\n    template: `\n      <div class=\"mail-spa-root\">\n        <router-view></router-view>\n      </div>\n    `,\n  });\n\n  app.use(router);\n  app.use(store);\n  app.mount(mountEl);\n}\n\nif (document.readyState === 'loading') {\n  document.addEventListener('DOMContentLoaded', startMailApp);\n} else {\n  setTimeout(startMailApp, 0);\n}\n"],
+  "mappings": "AAAA,OAAS,aAAAA,MAAiB,iCAC1B,OAAS,UAAAC,MAAc,cACvB,OAAS,SAAAC,MAAa,aAEtB,SAASC,GAAqB,CAC5B,MAAMC,EAAU,SAAS,eAAe,UAAU,EAClD,GAAI,CAACA,EAAS,OAEd,MAAMC,EAAML,EAAU,CACpB,SAAU;AAAA;AAAA;AAAA;AAAA,KAKZ,CAAC,EAEDK,EAAI,IAAIJ,CAAM,EACdI,EAAI,IAAIH,CAAK,EACbG,EAAI,MAAMD,CAAO,CACnB,CAEI,SAAS,aAAe,UAC1B,SAAS,iBAAiB,mBAAoBD,CAAY,EAE1D,WAAWA,EAAc,CAAC",
+  "names": ["createApp", "router", "store", "startMailApp", "mountEl", "app"]
+}

@@ -1,0 +1,443 @@
+<link rel="stylesheet" href="{{ _url('static', {'module': 'melodi_mailbox', 'path': ['scss', 'mail.css']}) }}">
+
+<div class="container-fluid py-3">
+  <!-- Point de montage SPA avec Skeleton Loader initial (zéro FOUC) -->
+  <div id="mail-app">
+    <div class="ds-card p-4 shadow-sm mb-4">
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="ds-skeleton-line" style="width: 240px; height: 32px;"></div>
+        <div class="ds-skeleton-line" style="width: 180px; height: 36px;"></div>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-lg-3">
+          <div class="ds-skeleton-line mb-2" style="height: 36px;"></div>
+          <div class="ds-skeleton-line mb-2" style="height: 28px;"></div>
+          <div class="ds-skeleton-line mb-2" style="height: 28px;"></div>
+          <div class="ds-skeleton-line" style="height: 28px;"></div>
+        </div>
+        <div class="col-12 col-lg-9">
+          <div class="ds-skeleton-line mb-3" style="height: 40px;"></div>
+          <div class="ds-skeleton-line mb-2" style="height: 64px;"></div>
+          <div class="ds-skeleton-line mb-2" style="height: 64px;"></div>
+          <div class="ds-skeleton-line" style="height: 64px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.MELODI_MAILBOX_I18N = {{ mail_i18n | tojson }};
+</script>
+
+<!-- ======================================================================= -->
+<!-- 1. VUE ESPACE DE TRAVAIL MAIL (PHASE 1 — COMPTES & DOSSIERS)            -->
+<!-- ======================================================================= -->
+<template id="tpl-mail-workspace">
+  <div class="mail-workspace-view">
+    {{ ds_page_header(
+      title=t('mail.title', 'MELODI Mailbox'),
+      subtitle=t('mail.subtitle', 'Client de messagerie professionnel multi-comptes intégré à votre ERP.'),
+      icon='mail',
+      actions=[
+        ds_button(
+          label=t('mail.refresh', 'Actualiser'),
+          variant='outline-secondary',
+          size='sm',
+          icon='refresh',
+          extra_attrs='@click="refresh"'
+        ),
+        ds_button(
+          label=t('mail.accounts_tab', 'Comptes email'),
+          variant='primary',
+          size='sm',
+          icon='settings',
+          extra_attrs='@click="goToAccounts"'
+        )
+      ]
+    ) }}
+
+    <div v-if="loadingAccounts" class="ds-card p-4">
+      <div class="ds-skeleton-line mb-3" style="width: 220px; height: 26px;"></div>
+      <div class="ds-skeleton-line mb-2" style="height: 44px;"></div>
+      <div class="ds-skeleton-line" style="height: 44px;"></div>
+    </div>
+
+    <div v-else-if="accounts.length === 0" class="ds-card p-4">
+      {{ ds_empty_state(
+        title=t('mail.no_accounts_title', 'Aucun compte email configuré'),
+        description=t('mail.no_accounts_desc', 'Connectez votre première boîte professionnelle (IMAP/SMTP, Gmail, Outlook, OVH...) pour commencer.'),
+        icon='mail',
+        children=[
+          ds_button(
+            label=t('mail.add_account', 'Ajouter un compte'),
+            variant='primary',
+            icon='add',
+            extra_attrs='@click="goToAccounts"'
+          )
+        ]
+      ) }}
+    </div>
+
+    <div v-else class="row g-3">
+      <!-- Volet latéral : sélecteur de compte + dossiers -->
+      <div class="col-12 col-lg-3">
+        <div class="mail-sidebar-card p-3">
+          <div class="mb-3">
+            <label class="ds-label small mb-1">{{ t('mail.select_account', 'Sélectionner un compte') }}</label>
+            <select class="ds-select w-100" :value="activeAccountId" @change="onAccountChange">
+              <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
+                [[ acc.name ]] ([[ acc.email_address ]])
+              </option>
+            </select>
+          </div>
+
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="ds-text-muted small fw-semibold text-uppercase">{{ t('mail.folders_title', 'Dossiers') }}</span>
+            <span v-if="activeAccount" class="ds-badge ds-badge-neutral">[[ folders.length ]]</span>
+          </div>
+
+          <div v-if="loadingFolders">
+            <div class="ds-skeleton-line mb-2" style="height: 30px;"></div>
+            <div class="ds-skeleton-line mb-2" style="height: 30px;"></div>
+            <div class="ds-skeleton-line" style="height: 30px;"></div>
+          </div>
+
+          <div v-else class="d-flex flex-column gap-1">
+            <button
+              v-for="folder in folders"
+              :key="folder.folder_id"
+              type="button"
+              class="mail-folder-item"
+              :class="{ 'is-active': activeFolderId === folder.folder_id }"
+              @click="selectFolder(folder.folder_id)"
+            >
+              <span class="d-flex align-items-center gap-2 text-truncate">
+                <img :src="iconUrl(folderIcon(folder.folder_type))" style="width: 16px; height: 16px;" :alt="folder.name" />
+                <span class="text-truncate">[[ folder.name ]]</span>
+              </span>
+              <span v-if="folder.unread_count > 0" class="ds-badge ds-badge-primary">[[ folder.unread_count ]]</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Zone principale -->
+      <div class="col-12 col-lg-9">
+        <div class="ds-card p-4">
+          <div v-if="activeAccount" class="d-flex flex-wrap justify-content-between align-items-center gap-2 pb-3 mb-3 border-bottom">
+            <div>
+              <h5 class="mb-0 fw-semibold">[[ activeAccount.name ]]</h5>
+              <div class="ds-text-muted small">[[ activeAccount.email_address ]] — IMAP: [[ activeAccount.imap_host ]]:[[ activeAccount.imap_port ]]</div>
+            </div>
+            <div class="d-flex gap-2">
+              <span class="ds-badge ds-badge-success" v-if="activeAccount.has_credentials">{{ t('mail.credentials_stored', 'Identifiants chiffrés') }}</span>
+              <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-primary" @click="goToAccounts">
+                {{ t('mail.manage_accounts_btn', 'Gérer mes comptes') }}
+              </button>
+            </div>
+          </div>
+
+          {{ ds_empty_state(
+            title=t('mail.phase1_ready_title', 'Boîte connectée et prête'),
+            description=t('mail.phase1_ready_desc', 'Les fondations multi-comptes, le chiffrement des identifiants et les tests IMAP/SMTP sont actifs. La réception et lecture des messages arriveront en Phase 2.'),
+            icon='mark_email_read'
+          ) }}
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<!-- ======================================================================= -->
+<!-- 2. VUE GESTION DES COMPTES EMAIL & ASSISTANT DE CONFIGURATION           -->
+<!-- ======================================================================= -->
+<template id="tpl-mail-accounts">
+  <div class="mail-accounts-view">
+    {{ ds_page_header(
+      title=t('mail.accounts_tab', 'Comptes email'),
+      subtitle=t('mail.subtitle', 'Client de messagerie professionnel multi-comptes intégré à votre ERP.'),
+      icon='manage_accounts',
+      actions=[
+        ds_button(
+          label=t('mail.workspace_tab', 'Boîte de réception'),
+          variant='outline-secondary',
+          size='sm',
+          icon='inbox',
+          extra_attrs='@click="goToWorkspace"'
+        ),
+        ds_button(
+          label=t('mail.add_account', 'Ajouter un compte'),
+          variant='primary',
+          size='sm',
+          icon='add',
+          extra_attrs='@click="openCreateModal"'
+        )
+      ]
+    ) }}
+
+    <!-- KPIs -->
+    <div class="row g-3 mb-4">
+      <div class="col-12 col-md-4">
+        {{ ds_stat_card(title=t('mail.kpi_accounts', 'Comptes connectés'), value='[[ accounts.length ]]', icon='mail', color='primary') }}
+      </div>
+      <div class="col-12 col-md-4">
+        {{ ds_stat_card(title=t('mail.kpi_active', 'Comptes actifs'), value='[[ activeCount ]]', icon='check_circle', color='success') }}
+      </div>
+      <div class="col-12 col-md-4">
+        {{ ds_stat_card(title=t('mail.kpi_errors', 'En erreur'), value='[[ errorCount ]]', icon='warning', color='danger') }}
+      </div>
+    </div>
+
+    <!-- Liste des comptes -->
+    <div v-if="loading" class="ds-card p-4">
+      <div class="ds-skeleton-line mb-3" style="height: 54px;"></div>
+      <div class="ds-skeleton-line mb-3" style="height: 54px;"></div>
+      <div class="ds-skeleton-line" style="height: 54px;"></div>
+    </div>
+
+    <div v-else-if="accounts.length === 0" class="ds-card p-4">
+      {{ ds_empty_state(
+        title=t('mail.no_accounts_title', 'Aucun compte email configuré'),
+        description=t('mail.no_accounts_desc', 'Connectez votre première boîte professionnelle (IMAP/SMTP, Gmail, Outlook, OVH...) pour commencer.'),
+        icon='mail',
+        children=[
+          ds_button(
+            label=t('mail.add_account', 'Ajouter un compte'),
+            variant='primary',
+            icon='add',
+            extra_attrs='@click="openCreateModal"'
+          )
+        ]
+      ) }}
+    </div>
+
+    <div v-else class="row g-3">
+      <div class="col-12 col-xl-6" v-for="acc in accounts" :key="acc.account_id">
+        <div class="mail-account-card p-3 h-100 d-flex flex-column justify-content-between">
+          <div>
+            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+              <div>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <h5 class="mb-0 fw-semibold">[[ acc.name ]]</h5>
+                  <span v-if="acc.is_default" class="ds-badge ds-badge-primary">{{ t('mail.default_badge', 'Par défaut') }}</span>
+                  <span class="ds-badge" :class="statusBadgeClass(acc.sync_status)">[[ statusLabel(acc.sync_status) ]]</span>
+                </div>
+                <div class="ds-text-muted small mt-1">[[ acc.email_address ]]</div>
+              </div>
+              <span class="ds-badge" :class="acc.is_active ? 'ds-badge-success' : 'ds-badge-secondary'">
+                [[ acc.is_active ? i18n.active_badge : i18n.inactive_badge ]]
+              </span>
+            </div>
+
+            <div class="row g-2 small ds-text-muted mt-2 mb-3">
+              <div class="col-12 col-sm-6">
+                <strong>IMAP :</strong> [[ acc.imap_host || '-' ]]:[[ acc.imap_port || '-' ]] ([[ acc.imap_security ]])
+              </div>
+              <div class="col-12 col-sm-6">
+                <strong>SMTP :</strong> [[ acc.smtp_host || '-' ]]:[[ acc.smtp_port || '-' ]] ([[ acc.smtp_security ]])
+              </div>
+            </div>
+
+            <div v-if="acc.last_error" class="ds-alert ds-alert-danger py-2 px-3 small mb-3">
+              [[ acc.last_error ]]
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 pt-2 border-top">
+            <span class="small ds-text-muted">
+              [[ acc.has_credentials ? i18n.credentials_stored : i18n.credentials_missing ]]
+            </span>
+            <div class="d-flex gap-2">
+              <button
+                type="button"
+                class="ds-btn ds-btn-sm ds-btn-outline-primary"
+                :disabled="testingAccountId === acc.account_id"
+                @click="runSavedAccountTest(acc)"
+              >
+                [[ testingAccountId === acc.account_id ? i18n.testing : '{{ t('mail.test_connection', 'Tester la connexion') }}' ]]
+              </button>
+              <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-secondary" @click="openEditModal(acc)">
+                {{ t('mail.edit_account', 'Modifier le compte') }}
+              </button>
+              <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-danger" @click="confirmDelete(acc)">
+                {{ t('mail.delete', 'Supprimer') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modale Assistant de configuration / Édition de compte -->
+    <div v-if="showModal" class="mail-modal-backdrop" @click.self="closeModal">
+      <div class="mail-modal-panel p-4">
+        <div class="d-flex justify-content-between align-items-center pb-3 mb-3 border-bottom">
+          <h5 class="mb-0 fw-bold">
+            [[ editingAccountId ? '{{ t('mail.edit_account', 'Modifier le compte') }}' : '{{ t('mail.new_account_wizard', 'Assistant de configuration de compte email') }}' ]]
+          </h5>
+          <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-secondary" @click="closeModal">✕</button>
+        </div>
+
+        <div v-if="formError" class="ds-alert ds-alert-danger mb-3">[[ formError ]]</div>
+
+        <form @submit="submitForm">
+          <!-- Identité & Détection automatique -->
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-8">
+              <label class="ds-label mb-1">{{ t('mail.email_address', 'Adresse email') }} *</label>
+              <input
+                type="email"
+                class="ds-input w-100"
+                v-model="form.email_address"
+                :disabled="Boolean(editingAccountId)"
+                placeholder="{{ t('mail.email_placeholder', 'contact@entreprise.com') }}"
+                required
+              />
+            </div>
+            <div class="col-12 col-md-4 d-flex align-items-end">
+              <button
+                type="button"
+                class="ds-btn ds-btn-outline-primary w-100"
+                :disabled="detecting || !form.email_address"
+                @click="runAutodiscover"
+              >
+                [[ detecting ? i18n.detecting : '{{ t('mail.autodiscover_btn', 'Détecter automatiquement') }}' ]]
+              </button>
+            </div>
+          </div>
+
+          <div v-if="autodiscoverInfo" class="ds-alert ds-alert-info py-2 px-3 small mb-3">
+            <strong>[[ autodiscoverInfo.provider_label ]]</strong> — [[ autodiscoverInfo.notes || i18n.autodiscover_ok ]]
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.account_name', 'Nom du compte') }} *</label>
+              <input
+                type="text"
+                class="ds-input w-100"
+                v-model="form.name"
+                placeholder="{{ t('mail.account_name_placeholder', 'Ex. Commercial Byt3Lab') }}"
+                required
+              />
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.sender_name', 'Nom de l\'expéditeur') }}</label>
+              <input
+                type="text"
+                class="ds-input w-100"
+                v-model="form.sender_name"
+                placeholder="{{ t('mail.sender_name_placeholder', 'Équipe Commerciale') }}"
+              />
+            </div>
+          </div>
+
+          <!-- IMAP -->
+          <h6 class="fw-semibold mt-3 mb-2">{{ t('mail.imap_section', 'Serveur de réception (IMAP)') }}</h6>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.host', 'Serveur (Hôte)') }}</label>
+              <input type="text" class="ds-input w-100" v-model="form.imap_host" placeholder="imap.exemple.com" required />
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="ds-label mb-1">{{ t('mail.port', 'Port') }}</label>
+              <input type="number" class="ds-input w-100" v-model="form.imap_port" min="1" max="65535" required />
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="ds-label mb-1">{{ t('mail.security', 'Sécurité') }}</label>
+              <select class="ds-select w-100" v-model="form.imap_security">
+                <option value="ssl">{{ t('mail.security_ssl', 'SSL / TLS') }}</option>
+                <option value="starttls">{{ t('mail.security_starttls', 'STARTTLS') }}</option>
+                <option value="none">{{ t('mail.security_none', 'Aucune (non recommandé)') }}</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- SMTP -->
+          <h6 class="fw-semibold mt-3 mb-2">{{ t('mail.smtp_section', 'Serveur d\'envoi (SMTP)') }}</h6>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.host', 'Serveur (Hôte)') }}</label>
+              <input type="text" class="ds-input w-100" v-model="form.smtp_host" placeholder="smtp.exemple.com" required />
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="ds-label mb-1">{{ t('mail.port', 'Port') }}</label>
+              <input type="number" class="ds-input w-100" v-model="form.smtp_port" min="1" max="65535" required />
+            </div>
+            <div class="col-6 col-md-3">
+              <label class="ds-label mb-1">{{ t('mail.security', 'Sécurité') }}</label>
+              <select class="ds-select w-100" v-model="form.smtp_security">
+                <option value="starttls">{{ t('mail.security_starttls', 'STARTTLS') }}</option>
+                <option value="ssl">{{ t('mail.security_ssl', 'SSL / TLS') }}</option>
+                <option value="none">{{ t('mail.security_none', 'Aucune (non recommandé)') }}</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Authentification -->
+          <h6 class="fw-semibold mt-3 mb-2">{{ t('mail.auth_section', 'Authentification') }}</h6>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.username', 'Identifiant de connexion') }}</label>
+              <input type="text" class="ds-input w-100" v-model="form.username" placeholder="contact@entreprise.com" />
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.password', 'Mot de passe / Mot de passe d\'application') }}</label>
+              <input type="password" class="ds-input w-100" v-model="form.password" autocomplete="new-password" />
+              <div v-if="editingAccountId" class="ds-text-muted small mt-1">
+                {{ t('mail.password_edit_hint', 'Laissez vide pour conserver le mot de passe chiffré actuel.') }}
+              </div>
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap gap-4 mb-3">
+            <label class="d-flex align-items-center gap-2">
+              <input type="checkbox" class="ds-checkbox" v-model="form.is_default" />
+              <span>{{ t('mail.is_default', 'Définir comme compte par défaut') }}</span>
+            </label>
+            <label class="d-flex align-items-center gap-2">
+              <input type="checkbox" class="ds-checkbox" v-model="form.is_active" />
+              <span>{{ t('mail.is_active', 'Compte actif') }}</span>
+            </label>
+          </div>
+
+          <!-- Résultat du test en direct -->
+          <div v-if="testResult" class="mail-test-result-box mb-3 small">
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <span class="ds-badge" :class="testResult.imap_ok ? 'ds-badge-success' : 'ds-badge-danger'">IMAP</span>
+              <span>[[ testResult.imap_message ]]</span>
+              <span v-if="testResult.imap_latency_ms !== null" class="ds-text-muted">([[ testResult.imap_latency_ms ]] ms)</span>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <span class="ds-badge" :class="testResult.smtp_ok ? 'ds-badge-success' : 'ds-badge-danger'">SMTP</span>
+              <span>[[ testResult.smtp_message ]]</span>
+              <span v-if="testResult.smtp_latency_ms !== null" class="ds-text-muted">([[ testResult.smtp_latency_ms ]] ms)</span>
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 pt-3 border-top">
+            <button
+              type="button"
+              class="ds-btn ds-btn-outline-primary"
+              :disabled="testingForm || !form.imap_host || !form.smtp_host"
+              @click="runFormConnectionTest"
+            >
+              [[ testingForm ? i18n.testing : '{{ t('mail.test_connection', 'Tester la connexion') }}' ]]
+            </button>
+            <div class="d-flex gap-2">
+              <button type="button" class="ds-btn ds-btn-outline-secondary" @click="closeModal">
+                {{ t('mail.cancel', 'Annuler') }}
+              </button>
+              <button type="submit" class="ds-btn ds-btn-primary" :disabled="saving">
+                [[ saving ? i18n.saving : '{{ t('mail.save_account', 'Enregistrer le compte') }}' ]]
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script type="module" src="{{ _url('static', {'module': 'melodi_mailbox', 'path': ['spa', 'app.js']}) }}"></script>

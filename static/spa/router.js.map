@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["router.ts"],
+  "sourcesContent": ["import { MelodiRouter } from '/static/base/melodiJS/index.js';\nimport type { RouteDef } from '/static/base/melodiJS/router.js';\nimport { MailWorkspaceView } from './views/MailWorkspaceView.js';\nimport { AccountsView } from './views/AccountsView.js';\n\nconst routes: RouteDef[] = [\n  {\n    path: '/',\n    component: MailWorkspaceView,\n  },\n  {\n    path: '/accounts',\n    component: AccountsView,\n  },\n  {\n    path: '*',\n    component: MailWorkspaceView,\n  },\n];\n\nexport const router = new MelodiRouter({\n  mode: 'hash',\n  routes,\n});\n"],
+  "mappings": "AAAA,OAAS,gBAAAA,MAAoB,iCAE7B,OAAS,qBAAAC,MAAyB,+BAClC,OAAS,gBAAAC,MAAoB,0BAE7B,MAAMC,EAAqB,CACzB,CACE,KAAM,IACN,UAAWF,CACb,EACA,CACE,KAAM,YACN,UAAWC,CACb,EACA,CACE,KAAM,IACN,UAAWD,CACb,CACF,EAEaG,EAAS,IAAIJ,EAAa,CACrC,KAAM,OACN,OAAAG,CACF,CAAC",
+  "names": ["MelodiRouter", "MailWorkspaceView", "AccountsView", "routes", "router"]
+}
