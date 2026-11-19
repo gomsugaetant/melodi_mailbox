@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import email
+import email.policy
+from email.header import decode_header, make_header
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import imaplib
 import re
 import smtplib
@@ -11,7 +16,11 @@ from typing import Optional
 from modules.melodi_mailbox.providers.base import (
     BaseMailProvider,
     ConnectionTestResult,
+    FetchBatchResult,
+    FetchedAttachmentData,
+    FetchedEmailData,
     MailAccountCredentials,
+    OutboundEmailData,
     RemoteFolderInfo,
 )
 
@@ -287,3 +296,342 @@ class ImapSmtpProvider(BaseMailProvider):
                     pass
 
         return await asyncio.to_thread(_run)
+
+    # ── Récupération, parsing MIME, envoi & flags (Phase 2) ───────────────────
+
+    @staticmethod
+    def _decode_mime_header(raw_val: Optional[str]) -> str:
+        if not raw_val:
+            return ""
+        try:
+            return str(make_header(decode_header(raw_val))).strip()
+        except Exception:
+            return str(raw_val).strip()
+
+    @staticmethod
+    def _parse_addr_list(raw_headers: list[str]) -> list[dict[str, str]]:
+        parsed = []
+        for name, addr in getaddresses(raw_headers):
+            clean_addr = (addr or "").strip().lower()
+            if clean_addr:
+                parsed.append({"name": ImapSmtpProvider._decode_mime_header(name), "email": clean_addr})
+        return parsed
+
+    @staticmethod
+    def _extract_uid_validity(client: imaplib.IMAP4) -> int:
+        try:
+            resp = client.response("UIDVALIDITY")
+            if resp and resp[1] and resp[1][0]:
+                val = resp[1][0]
+                return int(val.decode() if isinstance(val, bytes) else val)
+        except Exception:
+            pass
+        return 1
+
+    @staticmethod
+    def _parse_rfc_message(
+        raw_bytes: bytes,
+        imap_uid: int,
+        uid_validity: int,
+        mailbox: str,
+        flags_bytes: bytes = b"",
+    ) -> FetchedEmailData:
+        msg = email.message_from_bytes(raw_bytes, policy=email.policy.default)
+
+        from_list = ImapSmtpProvider._parse_addr_list(msg.get_all("From", []))
+        from_name = from_list[0]["name"] if from_list else ""
+        from_email = from_list[0]["email"] if from_list else ""
+
+        to_list = ImapSmtpProvider._parse_addr_list(msg.get_all("To", []))
+        cc_list = ImapSmtpProvider._parse_addr_list(msg.get_all("Cc", []))
+        reply_to_list = ImapSmtpProvider._parse_addr_list(msg.get_all("Reply-To", []))
+
+        rfc_msg_id = (msg.get("Message-ID") or "").strip() or None
+        in_reply_to = (msg.get("In-Reply-To") or "").strip() or None
+        refs_raw = (msg.get("References") or "").strip()
+        references = [r.strip() for r in refs_raw.split() if r.strip()] if refs_raw else []
+        subject = ImapSmtpProvider._decode_mime_header(msg.get("Subject")) or "(Sans objet)"
+
+        sent_iso: Optional[str] = None
+        date_raw = msg.get("Date")
+        if date_raw:
+            try:
+                dt = parsedate_to_datetime(date_raw)
+                sent_iso = dt.isoformat()
+            except Exception:
+                sent_iso = None
+
+        text_parts: list[str] = []
+        html_parts: list[str] = []
+        attachments: list[FetchedAttachmentData] = []
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.is_multipart():
+                    continue
+                ctype = (part.get_content_type() or "application/octet-stream").lower()
+                disp = (part.get_content_disposition() or "").lower()
+                filename = part.get_filename()
+                cid = (part.get("Content-ID") or "").strip().strip("<>") or None
+
+                payload_bytes = part.get_payload(decode=True) or b""
+                if disp == "attachment" or filename or (cid and ctype.startswith("image/")):
+                    attachments.append(
+                        FetchedAttachmentData(
+                            filename=ImapSmtpProvider._decode_mime_header(filename) or f"attachment_{len(attachments)+1}",
+                            mime_type=ctype,
+                            content=payload_bytes,
+                            size_bytes=len(payload_bytes),
+                            content_id=cid,
+                            is_inline=(disp == "inline" or bool(cid)),
+                        )
+                    )
+                elif ctype == "text/plain":
+                    charset = part.get_content_charset() or "utf-8"
+                    text_parts.append(payload_bytes.decode(charset, errors="replace"))
+                elif ctype == "text/html":
+                    charset = part.get_content_charset() or "utf-8"
+                    html_parts.append(payload_bytes.decode(charset, errors="replace"))
+        else:
+            ctype = (msg.get_content_type() or "text/plain").lower()
+            payload_bytes = msg.get_payload(decode=True) or b""
+            charset = msg.get_content_charset() or "utf-8"
+            decoded = payload_bytes.decode(charset, errors="replace")
+            if ctype == "text/html":
+                html_parts.append(decoded)
+            else:
+                text_parts.append(decoded)
+
+        flags_str = flags_bytes.decode("utf-8", errors="replace").lower() if flags_bytes else ""
+        headers_subset = {
+            k: ImapSmtpProvider._decode_mime_header(str(v))
+            for k, v in list(msg.items())[:30]
+        }
+
+        return FetchedEmailData(
+            imap_uid=imap_uid,
+            imap_uid_validity=uid_validity,
+            imap_mailbox=mailbox,
+            rfc_message_id=rfc_msg_id,
+            in_reply_to=in_reply_to,
+            references=references,
+            from_name=from_name,
+            from_email=from_email,
+            to=to_list,
+            cc=cc_list,
+            reply_to=reply_to_list[0]["email"] if reply_to_list else None,
+            subject=subject,
+            body_text="\n".join(text_parts).strip(),
+            body_html="\n".join(html_parts).strip(),
+            raw_headers=headers_subset,
+            is_read="\\seen" in flags_str,
+            is_starred="\\flagged" in flags_str,
+            is_draft="\\draft" in flags_str,
+            size_bytes=len(raw_bytes),
+            sent_at=sent_iso,
+            received_at=sent_iso,
+            attachments=attachments,
+        )
+
+    def _fetch_messages_sync(self, mailbox: str, last_uid: int, limit: int) -> FetchBatchResult:
+        client = self._connect_imap_sync()
+        try:
+            quoted_box = f'"{mailbox}"' if " " in mailbox and not mailbox.startswith('"') else mailbox
+            status, _ = client.select(quoted_box, readonly=True)
+            if status != "OK":
+                return FetchBatchResult(uid_validity=None, last_uid=last_uid, messages=[])
+
+            uid_validity = self._extract_uid_validity(client)
+            search_criteria = f"UID {int(last_uid) + 1}:*" if last_uid > 0 else "ALL"
+            st_search, uid_data = client.uid("search", None, search_criteria)
+            if st_search != "OK" or not uid_data or not uid_data[0]:
+                return FetchBatchResult(uid_validity=uid_validity, last_uid=last_uid, messages=[])
+
+            raw_uids = [int(u) for u in uid_data[0].split() if u.isdigit()]
+            # Exclure les UID <= last_uid (certains serveurs renvoient le dernier UID sur X:*)
+            uids = [u for u in raw_uids if u > last_uid]
+            if not uids:
+                return FetchBatchResult(uid_validity=uid_validity, last_uid=last_uid, messages=[])
+
+            # Lors de la synchro initiale (last_uid == 0), récupérer les N plus récents
+            if last_uid == 0 and len(uids) > limit:
+                uids = uids[-limit:]
+            else:
+                uids = uids[:limit]
+
+            fetched: list[FetchedEmailData] = []
+            max_uid = last_uid
+            for uid in uids:
+                st_f, msg_data = client.uid("fetch", str(uid), "(FLAGS BODY.PEEK[])")
+                if st_f != "OK" or not msg_data:
+                    continue
+                raw_bytes = b""
+                flags_bytes = b""
+                for part in msg_data:
+                    if isinstance(part, tuple) and len(part) >= 2:
+                        flags_bytes = part[0] or b""
+                        raw_bytes = part[1] or b""
+                        break
+                if not raw_bytes:
+                    continue
+                fetched.append(self._parse_rfc_message(raw_bytes, uid, uid_validity, mailbox, flags_bytes))
+                if uid > max_uid:
+                    max_uid = uid
+
+            return FetchBatchResult(uid_validity=uid_validity, last_uid=max_uid, messages=fetched)
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
+    async def fetch_messages(
+        self,
+        mailbox: str = "INBOX",
+        last_uid: int = 0,
+        limit: int = 50,
+    ) -> FetchBatchResult:
+        return await asyncio.to_thread(self._fetch_messages_sync, mailbox, last_uid, limit)
+
+    def _send_message_sync(self, outbound: OutboundEmailData, sent_mailbox: Optional[str]) -> str:
+        c = self.credentials
+        if not c.smtp_host:
+            raise ValueError("Hôte SMTP requis.")
+
+        msg = EmailMessage()
+        msg["From"] = formataddr((outbound.from_name, outbound.from_email)) if outbound.from_name else outbound.from_email
+        if outbound.to:
+            msg["To"] = ", ".join(outbound.to)
+        if outbound.cc:
+            msg["Cc"] = ", ".join(outbound.cc)
+        if outbound.reply_to:
+            msg["Reply-To"] = outbound.reply_to
+        msg["Subject"] = outbound.subject or ""
+        msg["Date"] = formatdate(localtime=True)
+        rfc_id = outbound.rfc_message_id or make_msgid(domain=outbound.from_email.split("@")[-1])
+        msg["Message-ID"] = rfc_id
+        if outbound.in_reply_to:
+            msg["In-Reply-To"] = outbound.in_reply_to
+        if outbound.references:
+            msg["References"] = " ".join(outbound.references)
+
+        msg.set_content(outbound.body_text or "")
+        if outbound.body_html:
+            msg.add_alternative(outbound.body_html, subtype="html")
+
+        for att in outbound.attachments:
+            maintype, _, subtype = (att.mime_type or "application/octet-stream").partition("/")
+            msg.add_attachment(
+                att.content,
+                maintype=maintype or "application",
+                subtype=subtype or "octet-stream",
+                filename=att.filename,
+                cid=f"<{att.content_id}>" if att.content_id else None,
+            )
+
+        all_rcpts = list(dict.fromkeys([*outbound.to, *outbound.cc, *outbound.bcc]))
+        security = (c.smtp_security or "starttls").lower()
+        timeout = int(c.timeout or 15)
+        client: Optional[smtplib.SMTP] = None
+        try:
+            if security == "ssl":
+                client = smtplib.SMTP_SSL(
+                    c.smtp_host, int(c.smtp_port or 465), timeout=timeout, context=self._ssl_context()
+                )
+            else:
+                client = smtplib.SMTP(c.smtp_host, int(c.smtp_port or 587), timeout=timeout)
+                client.ehlo()
+                if security == "starttls":
+                    client.starttls(context=self._ssl_context())
+                    client.ehlo()
+
+            username = c.username or c.email_address
+            if c.auth_mode == "password" and c.password is not None:
+                client.login(username, c.password)
+
+            client.send_message(msg, from_addr=outbound.from_email, to_addrs=all_rcpts)
+        finally:
+            if client is not None:
+                try:
+                    client.quit()
+                except Exception:
+                    pass
+
+        # Copie optionnelle dans le dossier Sent via IMAP APPEND
+        if sent_mailbox and c.imap_host:
+            imap_client: Optional[imaplib.IMAP4] = None
+            try:
+                imap_client = self._connect_imap_sync()
+                quoted = f'"{sent_mailbox}"' if " " in sent_mailbox and not sent_mailbox.startswith('"') else sent_mailbox
+                imap_client.append(quoted, "\\Seen", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+            except Exception:
+                pass
+            finally:
+                if imap_client is not None:
+                    try:
+                        imap_client.logout()
+                    except Exception:
+                        pass
+
+        return rfc_id
+
+    async def send_message(
+        self,
+        outbound: OutboundEmailData,
+        sent_mailbox: Optional[str] = None,
+    ) -> str:
+        return await asyncio.to_thread(self._send_message_sync, outbound, sent_mailbox)
+
+    def _set_flags_sync(self, mailbox: str, imap_uid: int, flags: list[str], add: bool) -> bool:
+        client = self._connect_imap_sync()
+        try:
+            quoted = f'"{mailbox}"' if " " in mailbox and not mailbox.startswith('"') else mailbox
+            st, _ = client.select(quoted)
+            if st != "OK":
+                return False
+            op = "+FLAGS.SILENT" if add else "-FLAGS.SILENT"
+            flag_str = f"({' '.join(flags)})"
+            st2, _ = client.uid("store", str(imap_uid), op, flag_str)
+            return st2 == "OK"
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
+    async def set_message_flags(
+        self,
+        mailbox: str,
+        imap_uid: int,
+        flags: list[str],
+        add: bool = True,
+    ) -> bool:
+        return await asyncio.to_thread(self._set_flags_sync, mailbox, imap_uid, flags, add)
+
+    def _move_message_sync(self, src_mailbox: str, imap_uid: int, dst_mailbox: str) -> bool:
+        client = self._connect_imap_sync()
+        try:
+            q_src = f'"{src_mailbox}"' if " " in src_mailbox and not src_mailbox.startswith('"') else src_mailbox
+            q_dst = f'"{dst_mailbox}"' if " " in dst_mailbox and not dst_mailbox.startswith('"') else dst_mailbox
+            st, _ = client.select(q_src)
+            if st != "OK":
+                return False
+            st_copy, _ = client.uid("copy", str(imap_uid), q_dst)
+            if st_copy != "OK":
+                return False
+            client.uid("store", str(imap_uid), "+FLAGS.SILENT", "(\\Deleted)")
+            client.expunge()
+            return True
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+
+    async def move_message(
+        self,
+        src_mailbox: str,
+        imap_uid: int,
+        dst_mailbox: str,
+    ) -> bool:
+        return await asyncio.to_thread(self._move_message_sync, src_mailbox, imap_uid, dst_mailbox)

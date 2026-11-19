@@ -76,3 +76,90 @@
   padding: 0.75rem 1rem;
   background: var(--ds-color-surface-subtle, rgba(15, 23, 42, 0.02));
 }
+
+// ── Phase 2 : Boîte de réception 3 volets, Lecteur & Éditeur ──────────────────
+
+.mail-thread-list {
+  max-height: calc(100vh - 290px);
+  overflow-y: auto;
+}
+
+.mail-thread-item {
+  border-bottom: 1px solid var(--ds-color-border, rgba(15, 23, 42, 0.08));
+  padding: 0.75rem 0.9rem;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+
+  &:hover {
+    background: var(--ds-color-surface-hover, rgba(79, 70, 229, 0.04));
+  }
+
+  &.is-selected {
+    background: var(--ds-color-primary-soft, rgba(79, 70, 229, 0.1));
+    border-left: 3px solid var(--ds-color-primary, #4f46e5);
+  }
+
+  &.is-unread {
+    background: var(--ds-color-surface-subtle, rgba(79, 70, 229, 0.03));
+
+    .mail-thread-sender,
+    .mail-thread-subject {
+      font-weight: 700;
+      color: var(--ds-color-text, #0f172a);
+    }
+  }
+}
+
+.mail-reader-pane {
+  min-height: 480px;
+  max-height: calc(100vh - 240px);
+  overflow-y: auto;
+}
+
+.mail-message-card {
+  border: 1px solid var(--ds-color-border, rgba(15, 23, 42, 0.1));
+  border-radius: var(--ds-radius-md, 10px);
+  background: var(--ds-surface-card, var(--ds-color-surface, #ffffff));
+}
+
+.mail-sandbox-iframe {
+  width: 100%;
+  min-height: 280px;
+  border: none;
+  background: #ffffff;
+  border-radius: var(--ds-radius-sm, 6px);
+}
+
+.mail-composer-panel {
+  max-width: 820px;
+}
+
+.mail-editor-area {
+  min-height: 220px;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--ds-color-border, rgba(15, 23, 42, 0.15));
+  border-radius: var(--ds-radius-md, 8px);
+  padding: 0.75rem;
+  background: var(--ds-surface-card, #ffffff);
+  color: var(--ds-color-text, #0f172a);
+  outline: none;
+
+  &:focus {
+    border-color: var(--ds-color-primary, #4f46e5);
+  }
+}
+
+.mail-star-btn {
+  border: none;
+  background: transparent;
+  padding: 0.15rem 0.25rem;
+  cursor: pointer;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--ds-color-text-muted, #94a3b8);
+
+  &.is-starred {
+    color: var(--ds-color-warning, #f59e0b);
+  }
+}

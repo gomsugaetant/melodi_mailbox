@@ -47,6 +47,15 @@ class MailWebController:
             "inactive_badge": t("mail.inactive_badge", "Inactif"),
             "credentials_stored": t("mail.credentials_stored", "Identifiants chiffrés"),
             "credentials_missing": t("mail.credentials_missing", "Identifiants manquants"),
+            "sync_btn": t("mail.sync_btn", "Synchroniser"),
+            "syncing_btn": t("mail.syncing_btn", "Synchronisation..."),
+            "send_btn": t("mail.send_btn", "Envoyer"),
+            "sending_btn": t("mail.sending_btn", "Envoi..."),
+            "draft_saved": t("mail.draft_saved", "Brouillon enregistré"),
+            "message_sent": t("mail.message_sent", "Message mis en file d'envoi."),
+            "sync_done": t("mail.sync_done", "Synchronisation terminée."),
+            "confirm_delete_msg": t("mail.confirm_delete_msg", "Supprimer définitivement ce message ?"),
+            "uploading": t("mail.uploading", "Téléversement..."),
         }
 
         content = Component(

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -248,4 +249,169 @@ class MailSyncStateModel(BaseModel):
             name=f"uq_{MailTables.SYNC_STATES}_account_folder",
         ),
         Index(f"ix_{MailTables.SYNC_STATES}_status_updated", "status", "updated_at"),
+    )
+
+
+class MailThreadModel(BaseModel):
+    """Fil de discussion regroupant les messages liés (RFC 5322 + sujet normalisé)."""
+
+    __tablename__ = MailTables.THREADS
+
+    thread_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            f"{MailTables.ACCOUNTS}.account_id",
+            name=f"fk_{MailTables.THREADS}_account_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    organization_id: Mapped[str] = mapped_column(String(100), nullable=False, default="default")
+    subject_normalized: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    snippet: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    participants_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unread_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    has_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_starred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_message_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Liens logiques inter-modules (JAMAIS de FK PostgreSQL)
+    contact_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    crm_links_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(f"ix_{MailTables.THREADS}_account_last_msg", "account_id", "last_message_at"),
+        Index(f"ix_{MailTables.THREADS}_org_contact", "organization_id", "contact_id"),
+        Index(f"ix_{MailTables.THREADS}_account_starred", "account_id", "is_starred"),
+    )
+
+
+class MailMessageModel(BaseModel):
+    """Message email individuel (reçu, envoyé ou brouillon) avec identifiants IMAP."""
+
+    __tablename__ = MailTables.MESSAGES
+
+    message_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            f"{MailTables.ACCOUNTS}.account_id",
+            name=f"fk_{MailTables.MESSAGES}_account_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    folder_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey(
+            f"{MailTables.FOLDERS}.folder_id",
+            name=f"fk_{MailTables.MESSAGES}_folder_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    thread_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey(
+            f"{MailTables.THREADS}.thread_id",
+            name=f"fk_{MailTables.MESSAGES}_thread_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    organization_id: Mapped[str] = mapped_column(String(100), nullable=False, default="default")
+
+    # Identifiants RFC 5322 & IMAP (jamais globalement uniques : toujours scopés compte+dossier+uidvalidity)
+    rfc_message_id: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    in_reply_to: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    references_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    imap_uid: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    imap_uid_validity: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    imap_mailbox: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    direction: Mapped[str] = mapped_column(String(20), nullable=False, default="inbound")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="received")
+
+    from_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    from_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    to_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    cc_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    bcc_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    reply_to: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    subject: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    snippet: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_html_sanitized: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    raw_headers_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    labels_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_starred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_important: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_draft: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_attachments: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    send_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    send_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "folder_id",
+            "imap_uid_validity",
+            "imap_uid",
+            name=f"uq_{MailTables.MESSAGES}_acct_folder_uidval_uid",
+        ),
+        Index(f"ix_{MailTables.MESSAGES}_acct_rfc_msg_id", "account_id", "rfc_message_id"),
+        Index(f"ix_{MailTables.MESSAGES}_folder_received_at", "folder_id", "received_at"),
+        Index(f"ix_{MailTables.MESSAGES}_thread_sent_at", "thread_id", "sent_at"),
+        Index(f"ix_{MailTables.MESSAGES}_org_from_email", "organization_id", "from_email"),
+        Index(f"ix_{MailTables.MESSAGES}_status_retries", "status", "send_retries"),
+    )
+
+
+class MailAttachmentModel(BaseModel):
+    """Pièce jointe email référençant exclusivement melodi_media via media_id."""
+
+    __tablename__ = MailTables.ATTACHMENTS
+
+    attachment_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            f"{MailTables.MESSAGES}.message_id",
+            name=f"fk_{MailTables.ATTACHMENTS}_message_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    organization_id: Mapped[str] = mapped_column(String(100), nullable=False, default="default")
+    media_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(150), nullable=False, default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sha256_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    content_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_inline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(f"ix_{MailTables.ATTACHMENTS}_message_id", "message_id"),
+        Index(f"ix_{MailTables.ATTACHMENTS}_org_sha256", "organization_id", "sha256_hash"),
+        Index(f"ix_{MailTables.ATTACHMENTS}_media_id", "media_id"),
     )

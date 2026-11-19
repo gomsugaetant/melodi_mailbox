@@ -8,15 +8,24 @@ from modules.melodi_mailbox.controllers.web import MailWebController
 from modules.melodi_mailbox.models.models import (
     MailAccountAccessModel,
     MailAccountModel,
+    MailAttachmentModel,
     MailFolderModel,
     MailIdentityModel,
+    MailMessageModel,
     MailSyncStateModel,
+    MailThreadModel,
 )
 from modules.melodi_mailbox.services import (
     CryptoService,
     MailAccountService,
+    MailAttachmentService,
     MailConnectionService,
+    MailMessageService,
+    MailSendService,
+    MailSyncService,
+    MailThreadService,
 )
+from modules.melodi_mailbox.tasks import register_mail_tasks
 
 
 class MelodiMailboxModule(ApplicationModule):
@@ -27,6 +36,11 @@ class MelodiMailboxModule(ApplicationModule):
         self.crypto_service: Optional[CryptoService] = None
         self.connection_service: Optional[MailConnectionService] = None
         self.account_service: Optional[MailAccountService] = None
+        self.attachment_service: Optional[MailAttachmentService] = None
+        self.thread_service: Optional[MailThreadService] = None
+        self.sync_service: Optional[MailSyncService] = None
+        self.message_service: Optional[MailMessageService] = None
+        self.send_service: Optional[MailSendService] = None
 
     def _get_permissions(self):
         return [
@@ -48,6 +62,9 @@ class MelodiMailboxModule(ApplicationModule):
                 MailIdentityModel,
                 MailFolderModel,
                 MailSyncStateModel,
+                MailThreadModel,
+                MailMessageModel,
+                MailAttachmentModel,
             ]
         )
 
@@ -67,7 +84,17 @@ class MelodiMailboxModule(ApplicationModule):
             router.add_route("/accounts/delete", MailAPIController.delete_account, methods=["DELETE", "POST"])
             router.add_route("/accounts/autodiscover", MailAPIController.autodiscover, methods=["POST"])
             router.add_route("/accounts/test", MailAPIController.test_connection, methods=["POST"])
+            router.add_route("/accounts/sync", MailAPIController.sync_account, methods=["POST"])
             router.add_route("/folders", MailAPIController.list_folders, methods=["GET"])
+            router.add_route("/threads", MailAPIController.list_threads, methods=["GET"])
+            router.add_route("/threads/detail", MailAPIController.get_thread_detail, methods=["GET"])
+            router.add_route("/messages/draft", MailAPIController.save_draft, methods=["POST"])
+            router.add_route("/messages/send", MailAPIController.send_message, methods=["POST"])
+            router.add_route("/messages/flags", MailAPIController.set_flags, methods=["POST"])
+            router.add_route("/messages/move", MailAPIController.move_messages, methods=["POST"])
+            router.add_route("/messages/delete", MailAPIController.delete_messages, methods=["DELETE", "POST"])
+            router.add_route("/attachments/upload", MailAPIController.upload_attachment, methods=["POST"])
+            router.add_route("/attachments/download", MailAPIController.download_attachment, methods=["GET"])
 
     def _register_navigation(self):
         self.register_navigation(
@@ -102,6 +129,30 @@ class MelodiMailboxModule(ApplicationModule):
             crypto_service=self.crypto_service,
             connection_service=self.connection_service,
         )
+        self.attachment_service = MailAttachmentService(self)
+        self.thread_service = MailThreadService(self)
+        self.sync_service = MailSyncService(
+            self,
+            account_service=self.account_service,
+            connection_service=self.connection_service,
+            thread_service=self.thread_service,
+            attachment_service=self.attachment_service,
+        )
+        self.message_service = MailMessageService(
+            self,
+            account_service=self.account_service,
+            connection_service=self.connection_service,
+            thread_service=self.thread_service,
+            attachment_service=self.attachment_service,
+        )
+        self.send_service = MailSendService(
+            self,
+            account_service=self.account_service,
+            connection_service=self.connection_service,
+            thread_service=self.thread_service,
+            attachment_service=self.attachment_service,
+        )
+        register_mail_tasks(self)
 
         # 4. Hooks internes, routes et navigation
         self._register_actions()

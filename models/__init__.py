@@ -4,6 +4,9 @@ from .models import (
     MailIdentityModel,
     MailFolderModel,
     MailSyncStateModel,
+    MailThreadModel,
+    MailMessageModel,
+    MailAttachmentModel,
 )
 
 __all__ = [
@@ -12,4 +15,7 @@ __all__ = [
     "MailIdentityModel",
     "MailFolderModel",
     "MailSyncStateModel",
+    "MailThreadModel",
+    "MailMessageModel",
+    "MailAttachmentModel",
 ]

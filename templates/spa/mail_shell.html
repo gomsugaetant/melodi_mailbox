@@ -31,7 +31,7 @@
 </script>
 
 <!-- ======================================================================= -->
-<!-- 1. VUE ESPACE DE TRAVAIL MAIL (PHASE 1 — COMPTES & DOSSIERS)            -->
+<!-- 1. VUE ESPACE DE TRAVAIL MAIL (PHASE 2 — CLIENT 3 VOLETS + COMPOSER)    -->
 <!-- ======================================================================= -->
 <template id="tpl-mail-workspace">
   <div class="mail-workspace-view">
@@ -41,15 +41,22 @@
       icon='mail',
       actions=[
         ds_button(
-          label=t('mail.refresh', 'Actualiser'),
-          variant='outline-secondary',
+          label=t('mail.compose_btn', 'Nouveau message'),
+          variant='primary',
           size='sm',
-          icon='refresh',
-          extra_attrs='@click="refresh"'
+          icon='edit',
+          extra_attrs='@click="openComposer()" :disabled="!activeAccountId"'
+        ),
+        ds_button(
+          label=t('mail.sync_btn', 'Synchroniser'),
+          variant='outline-primary',
+          size='sm',
+          icon='sync',
+          extra_attrs='@click="syncNow" :disabled="syncing || !activeAccountId"'
         ),
         ds_button(
           label=t('mail.accounts_tab', 'Comptes email'),
-          variant='primary',
+          variant='outline-secondary',
           size='sm',
           icon='settings',
           extra_attrs='@click="goToAccounts"'
@@ -79,22 +86,23 @@
       ) }}
     </div>
 
+    <!-- Interface 3 volets responsive -->
     <div v-else class="row g-3">
-      <!-- Volet latéral : sélecteur de compte + dossiers -->
-      <div class="col-12 col-lg-3">
-        <div class="mail-sidebar-card p-3">
+      <!-- Volet 1 : Comptes & Dossiers -->
+      <div class="col-12 col-lg-3 col-xl-2">
+        <div class="mail-sidebar-card p-3 h-100">
           <div class="mb-3">
             <label class="ds-label small mb-1">{{ t('mail.select_account', 'Sélectionner un compte') }}</label>
             <select class="ds-select w-100" :value="activeAccountId" @change="onAccountChange">
               <option v-for="acc in accounts" :key="acc.account_id" :value="acc.account_id">
-                [[ acc.name ]] ([[ acc.email_address ]])
+                [[ acc.name ]]
               </option>
             </select>
           </div>
 
           <div class="d-flex justify-content-between align-items-center mb-2">
             <span class="ds-text-muted small fw-semibold text-uppercase">{{ t('mail.folders_title', 'Dossiers') }}</span>
-            <span v-if="activeAccount" class="ds-badge ds-badge-neutral">[[ folders.length ]]</span>
+            <span v-if="syncing" class="ds-badge ds-badge-info">[[ i18n.syncing_btn ]]</span>
           </div>
 
           <div v-if="loadingFolders">
@@ -109,7 +117,7 @@
               :key="folder.folder_id"
               type="button"
               class="mail-folder-item"
-              :class="{ 'is-active': activeFolderId === folder.folder_id }"
+              :class="{ 'is-active': activeFolderId === folder.folder_id && activeFilter !== 'starred' }"
               @click="selectFolder(folder.folder_id)"
             >
               <span class="d-flex align-items-center gap-2 text-truncate">
@@ -122,28 +130,278 @@
         </div>
       </div>
 
-      <!-- Zone principale -->
-      <div class="col-12 col-lg-9">
-        <div class="ds-card p-4">
-          <div v-if="activeAccount" class="d-flex flex-wrap justify-content-between align-items-center gap-2 pb-3 mb-3 border-bottom">
-            <div>
-              <h5 class="mb-0 fw-semibold">[[ activeAccount.name ]]</h5>
-              <div class="ds-text-muted small">[[ activeAccount.email_address ]] — IMAP: [[ activeAccount.imap_host ]]:[[ activeAccount.imap_port ]]</div>
-            </div>
-            <div class="d-flex gap-2">
-              <span class="ds-badge ds-badge-success" v-if="activeAccount.has_credentials">{{ t('mail.credentials_stored', 'Identifiants chiffrés') }}</span>
-              <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-primary" @click="goToAccounts">
-                {{ t('mail.manage_accounts_btn', 'Gérer mes comptes') }}
+      <!-- Volet 2 : Liste des fils de discussion -->
+      <div class="col-12 col-lg-4 col-xl-4">
+        <div class="ds-card p-0 overflow-hidden h-100">
+          <div class="p-3 border-bottom">
+            <input
+              type="search"
+              class="ds-input w-100 mb-2"
+              v-model="searchQuery"
+              @input="onSearchInput"
+              placeholder="{{ t('mail.search_placeholder', 'Rechercher (objet, expéditeur, contenu)...') }}"
+            />
+            <div class="d-flex flex-wrap gap-1">
+              <button type="button" class="ds-btn ds-btn-xs" :class="activeFilter === 'all' ? 'ds-btn-primary' : 'ds-btn-outline-secondary'" @click="setFilter('all')">
+                {{ t('mail.filter_all', 'Tous') }}
+              </button>
+              <button type="button" class="ds-btn ds-btn-xs" :class="activeFilter === 'unread' ? 'ds-btn-primary' : 'ds-btn-outline-secondary'" @click="setFilter('unread')">
+                {{ t('mail.filter_unread', 'Non lus') }}
+              </button>
+              <button type="button" class="ds-btn ds-btn-xs" :class="activeFilter === 'starred' ? 'ds-btn-primary' : 'ds-btn-outline-secondary'" @click="setFilter('starred')">
+                {{ t('mail.filter_starred', 'Favoris') }}
+              </button>
+              <button type="button" class="ds-btn ds-btn-xs" :class="activeFilter === 'attachments' ? 'ds-btn-primary' : 'ds-btn-outline-secondary'" @click="setFilter('attachments')">
+                {{ t('mail.filter_attachments', 'Pièces jointes') }}
               </button>
             </div>
           </div>
 
-          {{ ds_empty_state(
-            title=t('mail.phase1_ready_title', 'Boîte connectée et prête'),
-            description=t('mail.phase1_ready_desc', 'Les fondations multi-comptes, le chiffrement des identifiants et les tests IMAP/SMTP sont actifs. La réception et lecture des messages arriveront en Phase 2.'),
-            icon='mark_email_read'
-          ) }}
+          <div v-if="loadingThreads" class="p-3">
+            <div class="ds-skeleton-line mb-3" style="height: 58px;"></div>
+            <div class="ds-skeleton-line mb-3" style="height: 58px;"></div>
+            <div class="ds-skeleton-line" style="height: 58px;"></div>
+          </div>
+
+          <div v-else-if="threads.length === 0" class="p-4">
+            {{ ds_empty_state(
+              title=t('mail.empty_folder_title', 'Aucun message dans ce dossier'),
+              description=t('mail.empty_folder_desc', 'Cliquez sur Synchroniser pour récupérer les derniers emails depuis le serveur.'),
+              icon='inbox'
+            ) }}
+          </div>
+
+          <div v-else class="mail-thread-list">
+            <div
+              v-for="th in threads"
+              :key="th.thread_id"
+              class="mail-thread-item"
+              :class="{ 'is-unread': th.unread_count > 0, 'is-selected': activeThread && activeThread.thread_id === th.thread_id }"
+              @click="openThread(th)"
+            >
+              <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                <span class="mail-thread-sender text-truncate small">
+                  [[ th.latest_from_name || th.latest_from_email || '-' ]]
+                  <span v-if="th.message_count > 1" class="ds-badge ds-badge-neutral ms-1">[[ th.message_count ]]</span>
+                </span>
+                <div class="d-flex align-items-center gap-1 flex-shrink-0">
+                  <img v-if="th.has_attachments" :src="iconUrl('attach_file')" style="width: 14px; height: 14px;" alt="PJ" />
+                  <button type="button" class="mail-star-btn" :class="{ 'is-starred': th.is_starred }" @click="toggleStar(th, $event)">★</button>
+                </div>
+              </div>
+              <div class="mail-thread-subject text-truncate small mb-1">[[ th.subject ]]</div>
+              <div class="d-flex justify-content-between align-items-center gap-2">
+                <span class="ds-text-muted small text-truncate">[[ th.snippet ]]</span>
+                <span class="ds-text-muted small flex-shrink-0">[[ formatDate(th.last_message_at) ]]</span>
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <!-- Volet 3 : Panneau de lecture sécurisé -->
+      <div class="col-12 col-lg-5 col-xl-6">
+        <div class="ds-card p-3 mail-reader-pane h-100">
+          <div v-if="loadingThreadDetail">
+            <div class="ds-skeleton-line mb-3" style="width: 60%; height: 28px;"></div>
+            <div class="ds-skeleton-line mb-3" style="height: 80px;"></div>
+            <div class="ds-skeleton-line" style="height: 220px;"></div>
+          </div>
+
+          <div v-else-if="!activeThread" class="py-5">
+            {{ ds_empty_state(
+              title=t('mail.select_thread_title', 'Sélectionnez une conversation'),
+              description=t('mail.select_thread_desc', 'Choisissez un message dans la liste centrale pour l\'afficher ici en toute sécurité.'),
+              icon='mark_email_read'
+            ) }}
+          </div>
+
+          <div v-else>
+            <!-- Barre d'actions conversation -->
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 pb-3 mb-3 border-bottom">
+              <h5 class="mb-0 fw-bold">[[ activeThread.subject ]]</h5>
+              <div class="d-flex flex-wrap gap-1">
+                <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-secondary" @click="markThreadUnread">
+                  {{ t('mail.mark_unread', 'Marquer non lu') }}
+                </button>
+                <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-secondary" @click="moveActiveThread('archive')">
+                  {{ t('mail.archive', 'Archiver') }}
+                </button>
+                <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-warning" @click="moveActiveThread('trash')">
+                  {{ t('mail.move_trash', 'Corbeille') }}
+                </button>
+                <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-danger" @click="deleteActiveThread">
+                  {{ t('mail.delete_forever', 'Supprimer définitivement') }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Messages du fil -->
+            <div class="d-flex flex-column gap-3">
+              <div v-for="msg in activeThread.messages" :key="msg.message_id" class="mail-message-card p-3">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
+                  <div>
+                    <div class="fw-semibold">
+                      [[ msg.from_name || msg.from_email ]]
+                      <span class="ds-text-muted fw-normal small">&lt;[[ msg.from_email ]]&gt;</span>
+                    </div>
+                    <div class="ds-text-muted small">
+                      {{ t('mail.to', 'À') }}: [[ (msg.to || []).map(r => r.email).join(', ') || '-' ]]
+                      <span v-if="msg.cc && msg.cc.length"> | {{ t('mail.cc', 'Cc') }}: [[ msg.cc.map(r => r.email).join(', ') ]]</span>
+                    </div>
+                  </div>
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="ds-text-muted small">[[ formatDate(msg.received_at || msg.sent_at) ]]</span>
+                    <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-primary" @click="replyToMessage(msg, false)">
+                      {{ t('mail.reply', 'Répondre') }}
+                    </button>
+                    <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-secondary" @click="replyToMessage(msg, true)">
+                      {{ t('mail.reply_all', 'Répondre à tous') }}
+                    </button>
+                    <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-secondary" @click="forwardMessage(msg)">
+                      {{ t('mail.forward', 'Transférer') }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="hasBlockedImages(msg) && !isRemoteImagesShown(msg.message_id)" class="ds-alert ds-alert-info py-1 px-2 small mb-2 d-flex justify-content-between align-items-center">
+                  <span>Images externes masquées par sécurité.</span>
+                  <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-primary" @click="allowRemoteImages(msg.message_id)">
+                    {{ t('mail.show_remote_images', 'Afficher les images externes bloquées') }}
+                  </button>
+                </div>
+
+                <!-- Rendu HTML strictement isolé dans une iframe sandbox -->
+                <iframe
+                  class="mail-sandbox-iframe"
+                  sandbox="allow-popups allow-popups-to-escape-sandbox"
+                  referrerpolicy="no-referrer"
+                  :srcdoc="buildIframeSrcdoc(msg)"
+                ></iframe>
+
+                <!-- Pièces jointes -->
+                <div v-if="msg.attachments && msg.attachments.length" class="mt-2 pt-2 border-top">
+                  <div class="small fw-semibold mb-1">{{ t('mail.attachments_title', 'Pièces jointes') }} ([[ msg.attachments.length ]])</div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <a
+                      v-for="att in msg.attachments"
+                      :key="att.attachment_id"
+                      :href="att.download_url"
+                      class="ds-btn ds-btn-xs ds-btn-outline-secondary d-inline-flex align-items-center gap-1"
+                    >
+                      <img :src="iconUrl('attach_file')" style="width: 14px; height: 14px;" alt="PJ" />
+                      <span>[[ att.filename ]] ([[ formatSize(att.size_bytes) ]])</span>
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modale Éditeur de Composition / Réponse / Transfert -->
+    <div v-if="showComposer" class="mail-modal-backdrop" @click.self="closeComposer">
+      <div class="mail-modal-panel mail-composer-panel p-4">
+        <div class="d-flex justify-content-between align-items-center pb-2 mb-3 border-bottom">
+          <div class="d-flex align-items-center gap-2">
+            <h5 class="mb-0 fw-bold">{{ t('mail.compose_btn', 'Nouveau message') }}</h5>
+            <span v-if="draftStatusText" class="ds-badge ds-badge-neutral">[[ draftStatusText ]]</span>
+          </div>
+          <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-secondary" @click="closeComposer">✕</button>
+        </div>
+
+        <form @submit="submitSend">
+          <div class="mb-2">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="ds-label mb-0">{{ t('mail.to', 'À') }} *</label>
+              <button type="button" class="ds-btn ds-btn-xs ds-btn-outline-secondary" @click="showCcBcc = !showCcBcc">
+                {{ t('mail.cc', 'Cc') }} / {{ t('mail.bcc', 'Cci') }}
+              </button>
+            </div>
+            <input
+              type="text"
+              class="ds-input w-100"
+              v-model="compose.to"
+              @input="scheduleAutoDraft"
+              placeholder="{{ t('mail.recipients_placeholder', 'destinataire@entreprise.com, autre@domaine.com') }}"
+              required
+            />
+          </div>
+
+          <div v-if="showCcBcc" class="row g-2 mb-2">
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.cc', 'Cc') }}</label>
+              <input type="text" class="ds-input w-100" v-model="compose.cc" @input="scheduleAutoDraft" />
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="ds-label mb-1">{{ t('mail.bcc', 'Cci') }}</label>
+              <input type="text" class="ds-input w-100" v-model="compose.bcc" @input="scheduleAutoDraft" />
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <label class="ds-label mb-1">{{ t('mail.subject', 'Objet') }}</label>
+            <input
+              type="text"
+              class="ds-input w-100"
+              v-model="compose.subject"
+              @input="scheduleAutoDraft"
+              placeholder="{{ t('mail.subject_placeholder', 'Objet du message') }}"
+            />
+          </div>
+
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <div class="d-flex gap-1">
+              <button type="button" class="ds-btn ds-btn-xs" :class="compose.mode === 'html' ? 'ds-btn-primary' : 'ds-btn-outline-secondary'" @click="compose.mode = 'html'">
+                {{ t('mail.html_mode', 'HTML') }}
+              </button>
+              <button type="button" class="ds-btn ds-btn-xs" :class="compose.mode === 'text' ? 'ds-btn-primary' : 'ds-btn-outline-secondary'" @click="compose.mode = 'text'">
+                {{ t('mail.text_mode', 'Texte brut') }}
+              </button>
+            </div>
+            <label class="ds-btn ds-btn-xs ds-btn-outline-primary mb-0" style="cursor: pointer;">
+              <span>[[ uploadingAttachment ? i18n.uploading : '{{ t('mail.add_attachment', 'Joindre un fichier') }}' ]]</span>
+              <input type="file" multiple class="d-none" @change="onAttachmentSelected" />
+            </label>
+          </div>
+
+          <div
+            v-if="compose.mode === 'html'"
+            class="mail-editor-area mb-2"
+            contenteditable="true"
+            :innerHTML="compose.body_html"
+            @input="onComposerHtmlInput"
+          ></div>
+          <textarea
+            v-else
+            class="ds-input w-100 mb-2"
+            rows="8"
+            v-model="compose.body_text"
+            @input="scheduleAutoDraft"
+          ></textarea>
+
+          <div v-if="compose.attachments.length" class="d-flex flex-wrap gap-2 mb-3">
+            <span v-for="att in compose.attachments" :key="att.attachment_id" class="ds-badge ds-badge-secondary">
+              📎 [[ att.filename ]] ([[ formatSize(att.size_bytes) ]])
+            </span>
+          </div>
+
+          <div class="d-flex justify-content-between align-items-center pt-2 border-top">
+            <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-secondary" @click="saveDraftNow">
+              {{ t('mail.save_draft_btn', 'Enregistrer brouillon') }}
+            </button>
+            <div class="d-flex gap-2">
+              <button type="button" class="ds-btn ds-btn-sm ds-btn-outline-secondary" @click="closeComposer">
+                {{ t('mail.cancel', 'Annuler') }}
+              </button>
+              <button type="submit" class="ds-btn ds-btn-sm ds-btn-primary" :disabled="sending">
+                [[ sending ? i18n.sending_btn : '{{ t('mail.send_btn', 'Envoyer') }}' ]]
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
     </div>
   </div>

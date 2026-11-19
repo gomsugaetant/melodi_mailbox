@@ -72,6 +72,85 @@ class ConnectionTestResult:
         }
 
 
+@dataclass
+class FetchedAttachmentData:
+    """Pièce jointe brute extraite d'un message MIME entrant."""
+
+    filename: str
+    mime_type: str
+    content: bytes
+    size_bytes: int
+    content_id: Optional[str] = None
+    is_inline: bool = False
+
+
+@dataclass
+class FetchedEmailData:
+    """Message email normalisé extrait d'un serveur distant."""
+
+    imap_uid: int
+    imap_uid_validity: int
+    imap_mailbox: str
+    rfc_message_id: Optional[str] = None
+    in_reply_to: Optional[str] = None
+    references: list[str] = field(default_factory=list)
+    from_name: str = ""
+    from_email: str = ""
+    to: list[dict[str, str]] = field(default_factory=list)
+    cc: list[dict[str, str]] = field(default_factory=list)
+    reply_to: Optional[str] = None
+    subject: str = ""
+    body_text: str = ""
+    body_html: str = ""
+    raw_headers: dict[str, str] = field(default_factory=dict)
+    is_read: bool = False
+    is_starred: bool = False
+    is_draft: bool = False
+    size_bytes: int = 0
+    sent_at: Optional[str] = None
+    received_at: Optional[str] = None
+    attachments: list[FetchedAttachmentData] = field(default_factory=list)
+
+
+@dataclass
+class FetchBatchResult:
+    """Résultat d'un lot de récupération depuis un dossier distant."""
+
+    uid_validity: Optional[int]
+    last_uid: int
+    messages: list[FetchedEmailData] = field(default_factory=list)
+
+
+@dataclass
+class OutboundAttachmentData:
+    """Pièce jointe préparée pour l'envoi sortant."""
+
+    filename: str
+    mime_type: str
+    content: bytes
+    content_id: Optional[str] = None
+    is_inline: bool = False
+
+
+@dataclass
+class OutboundEmailData:
+    """Enveloppe complète d'un email sortant."""
+
+    from_name: str
+    from_email: str
+    to: list[str]
+    cc: list[str] = field(default_factory=list)
+    bcc: list[str] = field(default_factory=list)
+    reply_to: Optional[str] = None
+    subject: str = ""
+    body_text: str = ""
+    body_html: str = ""
+    in_reply_to: Optional[str] = None
+    references: list[str] = field(default_factory=list)
+    rfc_message_id: Optional[str] = None
+    attachments: list[OutboundAttachmentData] = field(default_factory=list)
+
+
 class BaseMailProvider(ABC):
     """
     Interface abstraite de fournisseur de messagerie.
@@ -91,3 +170,39 @@ class BaseMailProvider(ABC):
     @abstractmethod
     async def list_folders(self) -> list[RemoteFolderInfo]:
         """Liste les dossiers distants avec détection des dossiers système."""
+
+    @abstractmethod
+    async def fetch_messages(
+        self,
+        mailbox: str = "INBOX",
+        last_uid: int = 0,
+        limit: int = 50,
+    ) -> FetchBatchResult:
+        """Récupère les nouveaux messages d'un dossier depuis last_uid."""
+
+    @abstractmethod
+    async def send_message(
+        self,
+        outbound: OutboundEmailData,
+        sent_mailbox: Optional[str] = None,
+    ) -> str:
+        """Envoie un email via le transport sortant et retourne le Message-ID."""
+
+    @abstractmethod
+    async def set_message_flags(
+        self,
+        mailbox: str,
+        imap_uid: int,
+        flags: list[str],
+        add: bool = True,
+    ) -> bool:
+        """Ajoute ou retire des drapeaux IMAP (ex. \\Seen, \\Flagged)."""
+
+    @abstractmethod
+    async def move_message(
+        self,
+        src_mailbox: str,
+        imap_uid: int,
+        dst_mailbox: str,
+    ) -> bool:
+        """Déplace un message d'un dossier distant vers un autre."""

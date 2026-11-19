@@ -6,6 +6,8 @@ import type {
   MailAccountFormPayload,
   MailFolder,
   MailStoreState,
+  MailThreadDetail,
+  MailThreadSummary,
 } from './types.js';
 
 const API_BASE = '/api/admin/melodi_mailbox';
@@ -24,8 +26,15 @@ export const store = new MelodiStore({
     activeAccountId: null,
     folders: [],
     activeFolderId: null,
+    threads: [],
+    threadsTotal: 0,
+    threadsPage: 1,
+    activeThread: null,
     loadingAccounts: false,
     loadingFolders: false,
+    loadingThreads: false,
+    loadingThreadDetail: false,
+    syncing: false,
     errorMessage: null,
     successMessage: null,
   }),
@@ -82,6 +91,23 @@ export const store = new MelodiStore({
     SET_LOADING_FOLDERS(state: MailStoreState, value: boolean) {
       state.loadingFolders = value;
     },
+    SET_THREADS(state: MailStoreState, payload: { items: MailThreadSummary[]; total: number; page: number }) {
+      state.threads = payload.items || [];
+      state.threadsTotal = payload.total || 0;
+      state.threadsPage = payload.page || 1;
+    },
+    SET_ACTIVE_THREAD(state: MailStoreState, detail: MailThreadDetail | null) {
+      state.activeThread = detail;
+    },
+    SET_LOADING_THREADS(state: MailStoreState, value: boolean) {
+      state.loadingThreads = value;
+    },
+    SET_LOADING_THREAD_DETAIL(state: MailStoreState, value: boolean) {
+      state.loadingThreadDetail = value;
+    },
+    SET_SYNCING(state: MailStoreState, value: boolean) {
+      state.syncing = value;
+    },
     SET_ERROR(state: MailStoreState, message: string | null) {
       state.errorMessage = message;
     },
@@ -112,9 +138,10 @@ export const store = new MelodiStore({
       }
     },
 
-    async fetchFolders({ commit }: any, accountId: string) {
+    async fetchFolders({ commit, dispatch, state }: any, accountId: string) {
       if (!accountId) {
         commit('SET_FOLDERS', []);
+        commit('SET_THREADS', { items: [], total: 0, page: 1 });
         return;
       }
       commit('SET_LOADING_FOLDERS', true);
@@ -124,6 +151,9 @@ export const store = new MelodiStore({
           cache: { strategy: 'network-only' },
         });
         commit('SET_FOLDERS', res?.data || []);
+        if (state.activeFolderId) {
+          await dispatch('fetchThreads', { page: 1 });
+        }
       } catch {
         commit('SET_FOLDERS', []);
       } finally {
@@ -133,7 +163,151 @@ export const store = new MelodiStore({
 
     async selectAccount({ commit, dispatch }: any, accountId: string) {
       commit('SET_ACTIVE_ACCOUNT', accountId);
+      commit('SET_ACTIVE_THREAD', null);
       await dispatch('fetchFolders', accountId);
+    },
+
+    async selectFolder({ commit, dispatch }: any, folderId: string) {
+      commit('SET_ACTIVE_FOLDER', folderId);
+      commit('SET_ACTIVE_THREAD', null);
+      await dispatch('fetchThreads', { page: 1 });
+    },
+
+    async fetchThreads(
+      { commit, state }: any,
+      opts: { page?: number; search?: string; unread?: boolean; starred?: boolean; has_attachments?: boolean } = {}
+    ) {
+      if (!state.activeAccountId) return;
+      commit('SET_LOADING_THREADS', true);
+      try {
+        const params: Record<string, any> = {
+          account_id: state.activeAccountId,
+          page: opts.page || 1,
+          per_page: 30,
+        };
+        if (state.activeFolderId && !opts.starred) {
+          params.folder_id = state.activeFolderId;
+        }
+        if (opts.search) params.search = opts.search;
+        if (opts.unread) params.unread = 'true';
+        if (opts.starred) params.starred = 'true';
+        if (opts.has_attachments) params.has_attachments = 'true';
+
+        const res = await getApi().get(`${API_BASE}/threads`, {
+          params,
+          cache: { strategy: 'network-only' },
+        });
+        commit('SET_THREADS', {
+          items: res?.data || [],
+          total: res?.meta?.total || 0,
+          page: res?.meta?.page || 1,
+        });
+      } finally {
+        commit('SET_LOADING_THREADS', false);
+      }
+    },
+
+    async fetchThreadDetail({ commit, dispatch }: any, threadId: string) {
+      if (!threadId) return;
+      commit('SET_LOADING_THREAD_DETAIL', true);
+      try {
+        const res = await getApi().get(`${API_BASE}/threads/detail`, {
+          params: { id: threadId },
+          cache: { strategy: 'network-only' },
+        });
+        const detail: MailThreadDetail | null = res?.data || null;
+        commit('SET_ACTIVE_THREAD', detail);
+        // Marquer automatiquement les messages non lus du fil comme lus à l'ouverture
+        const unreadIds = (detail?.messages || [])
+          .filter((m) => !m.is_read)
+          .map((m) => m.message_id);
+        if (unreadIds.length > 0) {
+          await dispatch('setFlags', { messageIds: unreadIds, isRead: true, refreshAfter: false });
+        }
+      } finally {
+        commit('SET_LOADING_THREAD_DETAIL', false);
+      }
+    },
+
+    async syncAccount({ commit, dispatch, state }: any) {
+      if (!state.activeAccountId) return;
+      commit('SET_SYNCING', true);
+      try {
+        await getApi().post(
+          `${API_BASE}/accounts/sync?id=${encodeURIComponent(state.activeAccountId)}`,
+          { folder_id: state.activeFolderId },
+          { notifyOnSuccess: getI18n().sync_done || 'Synchronisation terminée.' }
+        );
+        await dispatch('fetchFolders', state.activeAccountId);
+      } finally {
+        commit('SET_SYNCING', false);
+      }
+    },
+
+    async setFlags(
+      { dispatch, state }: any,
+      { messageIds, isRead, isStarred, refreshAfter = true }: { messageIds: string[]; isRead?: boolean; isStarred?: boolean; refreshAfter?: boolean }
+    ) {
+      await getApi().post(`${API_BASE}/messages/flags`, {
+        message_ids: messageIds,
+        is_read: isRead,
+        is_starred: isStarred,
+      });
+      if (refreshAfter && state.activeAccountId) {
+        await dispatch('fetchThreads', { page: state.threadsPage });
+        if (state.activeThread) {
+          await dispatch('fetchThreadDetail', state.activeThread.thread_id);
+        }
+      }
+    },
+
+    async moveMessages(
+      { commit, dispatch, state }: any,
+      { messageIds, targetFolderType, targetFolderId }: { messageIds: string[]; targetFolderType?: string; targetFolderId?: string }
+    ) {
+      await getApi().post(`${API_BASE}/messages/move`, {
+        message_ids: messageIds,
+        target_folder_type: targetFolderType,
+        target_folder_id: targetFolderId,
+      });
+      commit('SET_ACTIVE_THREAD', null);
+      if (state.activeAccountId) {
+        await dispatch('fetchFolders', state.activeAccountId);
+      }
+    },
+
+    async deleteMessages({ commit, dispatch, state }: any, messageIds: string[]) {
+      await getApi().post(`${API_BASE}/messages/delete`, { message_ids: messageIds });
+      commit('SET_ACTIVE_THREAD', null);
+      if (state.activeAccountId) {
+        await dispatch('fetchFolders', state.activeAccountId);
+      }
+    },
+
+    async saveDraft(_ctx: any, payload: Record<string, any>) {
+      const res = await getApi().post(`${API_BASE}/messages/draft`, payload, {
+        notifyOnError: false,
+      });
+      return res?.data;
+    },
+
+    async sendMessage({ dispatch, state }: any, payload: Record<string, any>) {
+      const res = await getApi().post(`${API_BASE}/messages/send`, payload, {
+        notifyOnSuccess: getI18n().message_sent || 'Message mis en file d\'envoi.',
+      });
+      if (state.activeAccountId) {
+        await dispatch('fetchFolders', state.activeAccountId);
+      }
+      return res?.data;
+    },
+
+    async uploadAttachment(_ctx: any, { file, accountId, messageId }: { file: File; accountId: string; messageId?: string | null }) {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('account_id', accountId);
+      if (messageId) fd.append('message_id', messageId);
+      const res = await getApi().upload(`${API_BASE}/attachments/upload`, fd);
+      return res?.data;
     },
 
     async createAccount({ commit, dispatch }: any, payload: MailAccountFormPayload): Promise<MailAccount | null> {
